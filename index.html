@@ -5227,6 +5227,26 @@
                     <label style="font-weight:600;font-size:13px;">Number of Questions</label>
                     <input type="number" id="dq-count" value="30" min="5" max="30" style="padding:10px;border:1px solid #ccc;border-radius:8px;margin:6px 0 14px;display:block;width:220px;">
 
+                    <label style="font-weight:600;font-size:13px;">
+                        📋 Paste Today's Current-Affairs Content (optional — from a coaching PDF/article)
+                    </label>
+                    <div style="font-size:12px;color:var(--text-muted);margin:2px 0 6px;">
+                        Copy the text from today's PDF (Ctrl+A, Ctrl+C in the PDF, then paste below). If you fill this in, the AI will build questions ONLY from this text (most reliable, most up-to-date) — GNews/live-search is skipped entirely. Leave empty to fall back to GNews + Search.
+                    </div>
+                    <textarea id="dq-source-text" rows="8" style="width:100%;max-width:900px;padding:10px;border:1px solid #ccc;border-radius:8px;margin:0 0 14px;font-family:inherit;" placeholder="Paste today's current affairs PDF/article text here..."></textarea>
+
+                    <hr style="margin:18px 0;">
+
+                    <label style="font-weight:600;font-size:13px;">
+                        📥 Import English Question-Set JSON → Bilingual (Hindi/English) Translate
+                    </label>
+                    <div style="font-size:12px;color:var(--text-muted);margin:2px 0 6px;">
+                        Upload a .json file (array of {question/options/correct/explanation} or {q/A/B/C/D/ans/exp}) — Gemini will translate each field into "Hindi / English" format, keeping all facts and the correct answer unchanged.
+                    </div>
+                    <input type="file" id="dq-json-file" accept=".json" style="display:block;margin-bottom:8px;">
+                    <textarea id="dq-json-text" rows="6" style="width:100%;max-width:900px;padding:10px;border:1px solid #ccc;border-radius:8px;margin:0 0 10px;font-family:monospace;font-size:12px;" placeholder="...or paste raw JSON here instead of uploading a file"></textarea>
+                    <button id="btn-dq-translate" class="btn" style="background:#00897b;color:#fff;" onclick="window.translateQuestionsJSON()">🌐 Translate to Bilingual</button>
+
                     <button id="btn-dq-generate" class="btn btn-primary" onclick="window.generateDailyQuiz()">✨ Generate Quiz (via Gemini)</button>
                     <button id="btn-dq-load" class="btn" style="background:#607d8b;color:#fff;" onclick="window.loadExistingDailyQuiz()">📂 Load Existing Quiz for this Date</button>
 
@@ -11405,8 +11425,8 @@
         // file), shows a preview, and only writes to Firestore when the admin
         // explicitly clicks "Save to Firebase".
         // ============================================================================
-        const DAILY_QUIZ_WORKER_URL = "https://sparkling-tree-380a.girlsstudents2023.workers.dev";
-        const DAILY_QUIZ_KEY = "Ankush@1231@123"; // must match PARSER_SECRET set in that Worker
+        const DAILY_QUIZ_WORKER_URL = "https://daily-quiz-generator.girlsstudents2023.workers.dev";
+        const DAILY_QUIZ_KEY = "PASTE_YOUR_PARSER_SECRET_HERE"; // must match PARSER_SECRET set in that Worker
 
         window._dqCurrentQuestions = null;
 
@@ -11420,6 +11440,7 @@
 
             const date = dateEl?.value || new Date().toISOString().split('T')[0];
             const count = parseInt(countEl?.value) || 30;
+            const sourceText = document.getElementById('dq-source-text')?.value?.trim() || "";
 
             if (btn) { btn.disabled = true; btn.innerText = "⏳ Generating... (may take 20-30s)"; }
             if (statusEl) statusEl.innerHTML = "";
@@ -11431,15 +11452,20 @@
                 const res = await fetch(DAILY_QUIZ_WORKER_URL, {
                     method: "POST",
                     headers: { "Content-Type": "application/json", "X-Parser-Key": DAILY_QUIZ_KEY },
-                    body: JSON.stringify({ count })
+                    body: JSON.stringify({ count, sourceText })
                 });
                 const data = await res.json();
                 if (!res.ok || data.error) {
                     throw new Error(data.error || ("Worker returned " + res.status));
                 }
                 window._dqCurrentQuestions = data.questions || [];
-                if (statusEl) statusEl.innerHTML =
-                    `<span style="color:green;">✅ ${window._dqCurrentQuestions.length} questions generated for ${date}. Review below, then Save.</span>`;
+                if (statusEl) {
+                    const counts = data.debugCounts ? Object.entries(data.debugCounts).map(([k,v]) => `${k}:${v}`).join(", ") : "";
+                    const sourceNote = data.usedSourceText ? "अपने Pasted Content से बना (GNews इस्तेमाल नहीं हुआ)" : "GNews + Search से बना";
+                    statusEl.innerHTML =
+                        `<span style="color:green;">✅ ${window._dqCurrentQuestions.length} questions generated for ${date} — via ${data.modelUsed || "?"} (${sourceNote}). Review below, then Save.</span>` +
+                        (counts ? `<br><span style="color:var(--text-muted);font-size:11px;">GNews headlines fetched: ${counts}</span>` : "");
+                }
                 window.renderDailyQuizPreview(window._dqCurrentQuestions);
                 if (saveRow) saveRow.style.display = window._dqCurrentQuestions.length > 0 ? "block" : "none";
             } catch (err) {
@@ -11494,6 +11520,67 @@
             }).catch(err => {
                 if (statusEl) statusEl.innerHTML = `<span style="color:red;">❌ Save failed: ${err.message}</span>`;
             });
+        };
+
+        // Auto-fill the JSON textarea when a file is chosen, so the same
+        // textarea always holds "what will be sent" whether typed or uploaded.
+        (function attachDqFileListener() {
+            const fileInput = document.getElementById('dq-json-file');
+            if (fileInput) {
+                fileInput.addEventListener('change', function() {
+                    const file = this.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const jsonTextEl = document.getElementById('dq-json-text');
+                        if (jsonTextEl) jsonTextEl.value = e.target.result;
+                    };
+                    reader.readAsText(file);
+                });
+            }
+        })();
+
+        window.translateQuestionsJSON = async function() {
+            const jsonTextEl = document.getElementById('dq-json-text');
+            const statusEl = document.getElementById('dq-status');
+            const previewEl = document.getElementById('dq-preview');
+            const saveRow = document.getElementById('dq-save-row');
+            const btn = document.getElementById('btn-dq-translate');
+
+            let parsed;
+            try {
+                parsed = JSON.parse(jsonTextEl?.value || "");
+                if (!Array.isArray(parsed)) throw new Error("JSON must be an array of questions.");
+            } catch (e) {
+                if (statusEl) statusEl.innerHTML = `<span style="color:red;">❌ Invalid JSON: ${e.message}</span>`;
+                return;
+            }
+
+            if (btn) { btn.disabled = true; btn.innerText = `⏳ Translating ${parsed.length} questions...`; }
+            if (statusEl) statusEl.innerHTML = "";
+            if (previewEl) previewEl.innerHTML = "";
+            if (saveRow) saveRow.style.display = "none";
+            window._dqCurrentQuestions = null;
+
+            try {
+                const res = await fetch(DAILY_QUIZ_WORKER_URL, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "X-Parser-Key": DAILY_QUIZ_KEY },
+                    body: JSON.stringify({ translateJSON: parsed })
+                });
+                const data = await res.json();
+                if (!res.ok || data.error) throw new Error(data.error || ("Worker returned " + res.status));
+
+                window._dqCurrentQuestions = data.questions || [];
+                if (statusEl) statusEl.innerHTML =
+                    `<span style="color:green;">✅ ${window._dqCurrentQuestions.length} questions translated to Bilingual (Hindi/English). Review below, then Save.</span>`;
+                window.renderDailyQuizPreview(window._dqCurrentQuestions);
+                if (saveRow) saveRow.style.display = window._dqCurrentQuestions.length > 0 ? "block" : "none";
+            } catch (err) {
+                if (statusEl) statusEl.innerHTML = `<span style="color:red;">❌ ${err.message}</span>`;
+            } finally {
+                if (btn) { btn.disabled = false; btn.innerText = "🌐 Translate to Bilingual"; }
+            }
         };
 
         window.loadExistingDailyQuiz = function() {
